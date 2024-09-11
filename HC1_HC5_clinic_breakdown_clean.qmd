@@ -1,0 +1,185 @@
+---
+title: "HC1 clinic report"
+format: 
+  html:
+    css: styles.css
+editor: visual
+---
+
+```{r}
+#| echo: false
+#| include: false
+#| message: false
+
+#Final result is an html file
+#Create table of unique patient visits by year since 2018
+#Create table of unique clinic visits by year since 2018
+#Figures depicting monthly and yearly visit totals and monthly patient totals
+
+
+#Packages 
+library(tidyverse) #data manipulation
+library(kableExtra) #formatting tables
+library(knitr) #formatting tables
+library(lubridate) #date/time variable manipulation
+library(haven) #used to read in SAS data files 
+library(forcats) #used to recode factor levels
+library(DBI) #database interface package 
+library(odbc) #provides a DBI-compliant interface to odbc driver (used in combo with DBI package) 
+
+
+#Create connection to EMR database (dummy server address and name)
+con <- DBI::dbConnect(odbc::odbc(),
+                      
+                      Driver = "ODBC Driver 17 for SQL Server",
+                      
+                      Encrypt = "yes",
+                      
+                      Trusted_Connection = "yes",
+                      
+                      TrustServerCertificate = "yes",
+                      
+                      Server = "111.222.333.44",
+
+                      Database ="EMR")
+
+
+#Query to pull in relevant info from the clinic visit table, treatment table, medical record table, demographics, etc. and do preliminary filtering of data based on BIC Tx, visit date, and PHL ZIP as per inclusion criteria
+sql1 <-"SELECT A.patient_id, A.visit_datetime,A.visit_id,A.ds_clinic_visit_id,
+B.dob,B.ethnicity_code_id,B.gender_code,
+C.ds_medical_record_id,
+D.identified_gender_code_id, 
+E.clinic_id,
+F.race_code_id, 
+G.race_code,G.race_desc,
+year(A.visit_datetime) AS Visit_Year,
+month(A.visit_datetime) AS Visit_Month
+
+FROM ds_clinic_visits as A
+LEFT JOIN patients_vw as B on A.patient_id=B.patient_id
+LEFT JOIN ds_medical_records as C on A.ds_clinic_visit_id = C.ds_clinic_visit_id
+LEFT JOIN patient_ds as D on A.patient_id = D.patient_id
+LEFT JOIN clinics as E on A.clinic_id = E.clinic_id
+LEFT JOIN patient_races as F on A.patient_id=F.patient_id
+LEFT JOIN race_codes as G on F.race_code_id = G.race_code_id
+WHERE year(A.visit_datetime) >= 2018 and
+visit_id LIKE 'C%' and 
+E.clinic_id = 922"
+
+
+#Execute above query and store result in an R dataframe called vis_plus 
+Visit_Data <-DBI::dbGetQuery(con, sql1)
+
+#disconnect from SQL server after running query
+dbDisconnect(con)
+
+```
+
+#### [Total Number of Unique Visits At Health Center 1 Each Year]{.underline}
+
+```{r}
+#| echo: false
+#| warning: false
+#| results: asis
+
+Vis_Dat_Clean <- Visit_Data %>% 
+        #select distinct visit ids
+        distinct(visit_id,.keep_all = TRUE) %>%
+  #get rid of '24 data since it's not a complete year of data
+  filter(Visit_Year != 2024) %>% 
+  #Sum total unique visits by year 
+        group_by(Visit_Month,Visit_Year,clinic_id) %>% 
+        summarise(`Total Visits Per Month` = n()) %>% 
+  ungroup()
+ 
+
+#Format table so it looks nicer in HTML
+print(Vis_Dat_Clean %>% 
+        group_by(Visit_Year) %>%
+        summarise(`Total Visits Per Year` = sum(`Total Visits Per Month`)) %>% 
+         pivot_wider(names_from = Visit_Year,values_from = `Total Visits Per Year`) %>% 
+        
+        #no caption
+        kbl(caption = "",align = 'c') %>%
+        
+        #format column borders
+        column_spec(1:ncol(Vis_Dat_Clean %>% 
+        group_by(Visit_Year) %>%
+        summarise(`Total Visits Per Year` = sum(`Total Visits Per Month`)) %>% 
+         pivot_wider(names_from = Visit_Year,values_from = `Total Visits Per Year`)),border_left=T,border_right=T) %>%     
+        #Don't use 100% width, it looks weird
+        kable_styling(full_width = F))
+
+```
+#### [Total Number of Unique Visits Each Month At Health Center 1 By Year]{.underline}
+
+```{r}
+#| echo: false
+#| warning: false
+#| results: asis
+#| 
+#Create a line plot depicting monthly totals at HC1 for 2018-2023
+ggplot(
+  Vis_Dat_Clean,
+  #x axis = Visit month, y axis = Monthly totals, group data by Visit year
+  aes(x = as.factor(Visit_Month), y = `Total Visits Per Month`, group = as.factor(Visit_Year)))+
+  #color lines and points by visit year
+  geom_line(aes(color = as.factor(Visit_Year)))+
+  geom_point(aes(color = as.factor(Visit_Year)))+
+  labs(x = "Visit Month",
+       color = "Visit Year")
+
+```
+
+#### [Total Number of Unique Patients seen Each Month At Health Center 1 By Year]{.underline}
+
+```{r}
+#| echo: false
+#| warning: false
+#| results: asis
+
+Pat_Dat_Monthly <- Visit_Data %>%
+       #get rid of '24 data since it's not a complete year of data
+        filter(Visit_Year != 2024) %>%
+      
+        #Total unique patients seen by month and year
+        group_by(Visit_Month,Visit_Year) %>% 
+        distinct(patient_id,.keep_all = TRUE) %>% 
+        summarise(`Total Patients Per Month` = n()) %>% 
+  ungroup() 
+
+
+#Format table so it looks nicer in HTML
+print(Pat_Dat_Monthly %>% 
+  rename(`Visit Month` = "Visit_Month",
+         `Visit Year` = "Visit_Year") %>% 
+  pivot_wider(names_from = `Visit Month`, values_from = `Total Patients Per Month`) %>% 
+    
+    #no caption    
+    kbl(caption = "",align = 'c') %>% 
+    
+    #format column borders
+        column_spec(1:ncol(Pat_Dat_Monthly %>% 
+  rename(`Visit Month` = "Visit_Month",
+         `Visit Year` = "Visit_Year") %>% 
+  pivot_wider(names_from = `Visit Month`, values_from = `Total Patients Per Month`)),border_left=T,border_right=T) %>% 
+        #Don't use 100% width, it looks weird
+        kable_styling(full_width = F))
+
+
+#Create a line plot depicting monthly totals of unique patients seen at HC1 from 2018-2023
+ggplot(
+  Pat_Dat_Monthly,
+  #x axis = Visit month, y axis = Monthly totals, group data by Visit year
+  aes(x = as.factor(Visit_Month), y = `Total Patients Per Month`, group = as.factor(Visit_Year)))+
+  #color lines and points by visit year
+  geom_line(aes(color = as.factor(Visit_Year)))+
+  geom_point(aes(color = as.factor(Visit_Year)))+
+  
+  #Clean up axis and legend labels
+  labs(x = "Visit Month",
+       color = "Visit Year")
+
+
+
+```
